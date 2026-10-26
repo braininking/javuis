@@ -1,0 +1,6 @@
+{
+  "name": "ARES",
+  "description": "Assistente de IA pessoal para Android estilo JARVIS com teclado inteligente e visão de tela",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
