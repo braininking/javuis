@@ -255,6 +255,7 @@ class AresInputMethodService : InputMethodService() {
     aiStatusText.text = "ARES aguardando autorização para analisar a tela…"
     aiActionBtn.visibility = View.GONE
     AresInputCallback.onBitmap = { bitmap: Bitmap ->
+      if (android.os.Build.VERSION.SDK_INT >= 28) requestShowSelf(0)
       serviceScope.launch {
         try {
           aiStatusText.text = "Analisando imagem e contexto com Gemini…"
@@ -270,6 +271,7 @@ class AresInputMethodService : InputMethodService() {
       }
     }
     AresInputCallback.onError = { message ->
+      if (android.os.Build.VERSION.SDK_INT >= 28) requestShowSelf(0)
       aiStatusText.text = message
       aiActionBtn.visibility = View.GONE
     }
@@ -447,18 +449,28 @@ class AresInputMethodService : InputMethodService() {
           }
         }
       } else if (label == "BACKSPACE") {
-        var downX = 0f
+        var anchorX = 0f
+        var dragDeleting = false
+        val deleteThreshold = dpToPx(30).coerceAtLeast(1)
         setOnTouchListener { _, event ->
           when (event.actionMasked) {
-            android.view.MotionEvent.ACTION_DOWN -> { downX = event.rawX; false }
-            android.view.MotionEvent.ACTION_UP -> {
-              val dx = event.rawX - downX
-              if (dx < -dpToPx(24)) {
-                deleteWordsFromCursor(kotlin.math.abs(dx))
-                true
-              } else false
+            android.view.MotionEvent.ACTION_DOWN -> {
+              anchorX = event.rawX
+              dragDeleting = false
+              false
             }
-            else -> false
+            android.view.MotionEvent.ACTION_MOVE -> {
+              val movedLeft = anchorX - event.rawX
+              if (movedLeft >= deleteThreshold) {
+                // One deletion per 30dp crossed; never query/delete on every pixel.
+                deleteWordsFromCursor(dpToPx(18).toFloat())
+                anchorX = event.rawX
+                dragDeleting = true
+                true
+              } else dragDeleting
+            }
+            android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> dragDeleting
+            else -> dragDeleting
           }
         }
       }
