@@ -70,9 +70,9 @@ class AresInputMethodService : InputMethodService() {
       setBackgroundColor(Color.parseColor("#090E18"))
       layoutParams = ViewGroup.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
-        ViewGroup.LayoutParams.WRAP_CONTENT
+        dpToPx(260)
       )
-      setPadding(8, 6, 8, 12)
+      setPadding(4, 0, 4, 2)
     }
 
     // 1. ARES AI Header Bar
@@ -88,7 +88,8 @@ class AresInputMethodService : InputMethodService() {
       orientation = LinearLayout.VERTICAL
       layoutParams = LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
-        ViewGroup.LayoutParams.WRAP_CONTENT
+        0,
+        1f
       )
     }
     keyboardRoot.addView(keysContainer)
@@ -113,7 +114,7 @@ class AresInputMethodService : InputMethodService() {
       gravity = Gravity.CENTER_VERTICAL
       layoutParams = LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
-        dpToPx(42)
+        dpToPx(48)
       ).apply { setMargins(4, 0, 4, 6) }
     }
 
@@ -286,7 +287,7 @@ class AresInputMethodService : InputMethodService() {
         gravity = Gravity.CENTER
         layoutParams = LinearLayout.LayoutParams(
           ViewGroup.LayoutParams.MATCH_PARENT,
-          dpToPx(46)
+          dpToPx(43)
         ).apply { setMargins(0, dpToPx(2), 0, dpToPx(2)) }
       }
 
@@ -351,6 +352,61 @@ class AresInputMethodService : InputMethodService() {
 
       setOnClickListener {
         handleKeyPress(label)
+      }
+      if (label == "SPACE") {
+        var downX = 0f
+        var lastX = 0f
+        var dragged = false
+        var accumulated = 0f
+        setOnTouchListener { _, event ->
+          when (event.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+              downX = event.rawX
+              lastX = downX
+              dragged = false
+              accumulated = 0f
+              false
+            }
+            android.view.MotionEvent.ACTION_MOVE -> {
+              val dx = event.rawX - lastX
+              if (kotlin.math.abs(event.rawX - downX) > dpToPx(8)) dragged = true
+              if (dragged) {
+                accumulated += dx
+                lastX = event.rawX
+                val step = dpToPx(12).coerceAtLeast(1)
+                if (kotlin.math.abs(accumulated) >= step) {
+                  val ic = currentInputConnection
+                  val extracted = ic?.getExtractedText(android.view.inputmethod.ExtractedTextRequest(), 0)
+                  if (ic != null && extracted != null) {
+                    val textLength = extracted.text?.length ?: 0
+                    val cursor = extracted.selectionStart.coerceIn(0, textLength)
+                    val target = (cursor + if (accumulated > 0) 1 else -1).coerceIn(0, textLength)
+                    ic.setSelection(target, target)
+                  }
+                  accumulated = 0f
+                }
+                true
+              } else false
+            }
+            android.view.MotionEvent.ACTION_UP -> if (dragged) true else false
+            else -> false
+          }
+        }
+      } else if (label == "BACKSPACE") {
+        var downX = 0f
+        setOnTouchListener { _, event ->
+          when (event.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> { downX = event.rawX; false }
+            android.view.MotionEvent.ACTION_UP -> {
+              val dx = event.rawX - downX
+              if (dx < -dpToPx(24)) {
+                deleteWordsFromCursor(kotlin.math.abs(dx))
+                true
+              } else false
+            }
+            else -> false
+          }
+        }
       }
     }
     return keyBtn
