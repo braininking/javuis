@@ -546,7 +546,7 @@ class AresInputMethodService : InputMethodService() {
       "n" -> listOf("ñ")
       else -> return
     }
-    lateinit var popup: PopupWindow
+    var popup: PopupWindow? = null
     val row = LinearLayout(this).apply {
       orientation = LinearLayout.HORIZONTAL
       setPadding(dpToPx(4), dpToPx(4), dpToPx(4), dpToPx(4))
@@ -559,7 +559,7 @@ class AresInputMethodService : InputMethodService() {
           setPadding(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4))
           setOnClickListener {
             currentInputConnection?.commitText(text, 1)
-            popup.dismiss()
+            popup?.dismiss()
           }
         })
       }
@@ -572,7 +572,7 @@ class AresInputMethodService : InputMethodService() {
       })
       elevation = dpToPx(8).toFloat()
     }
-    popup.showAsDropDown(anchor, 0, -anchor.height * 2)
+    popup?.showAsDropDown(anchor, 0, -anchor.height * 2)
   }
 
   private fun toggleGifPanel() {
