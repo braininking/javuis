@@ -40,7 +40,7 @@
             android:name=".service.AresVisionCaptureService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection"
-            android:permission="android.permission.FOREGROUND_SERVICE" />
+            />
 
         <!-- Teclado Android ARES via InputMethodService -->
         <service
