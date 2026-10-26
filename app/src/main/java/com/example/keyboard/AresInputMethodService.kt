@@ -3,6 +3,14 @@ package com.example.keyboard
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.content.Intent
+import android.speech.RecognizerIntent
+import android.speech.RecognitionListener
+import android.speech.SpeechRecognizer
+import android.os.Bundle
+import com.google.mlkit.nl.translate.Translation
+import com.google.mlkit.nl.translate.TranslatorOptions
+import com.google.mlkit.nl.translate.TranslateLanguage
 import android.inputmethodservice.InputMethodService
 import android.util.TypedValue
 import android.view.Gravity
@@ -28,6 +36,10 @@ class AresInputMethodService : InputMethodService() {
   private lateinit var geminiRepository: GeminiRepository
   private var isShifted = false
   private var isSymbols = false
+  private var speechRecognizer: SpeechRecognizer? = null
+  private var translator: com.google.mlkit.nl.translate.Translator? = null
+  private var auxiliaryPanel: TextView? = null
+  private var showingGifPanel = false
 
   private lateinit var keyboardRoot: LinearLayout
   private lateinit var keysContainer: LinearLayout
@@ -40,10 +52,15 @@ class AresInputMethodService : InputMethodService() {
   override fun onCreate() {
     super.onCreate()
     geminiRepository = GeminiRepository(this)
+    translator = Translation.getClient(TranslatorOptions.Builder().setSourceLanguage(TranslateLanguage.ENGLISH).setTargetLanguage(TranslateLanguage.PORTUGUESE).build())
   }
 
   override fun onDestroy() {
     super.onDestroy()
+    speechRecognizer?.destroy()
+    speechRecognizer = null
+    translator?.close()
+    translator = null
     serviceScope.cancel()
   }
 
