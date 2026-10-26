@@ -52,6 +52,7 @@ class AresInputMethodService : InputMethodService() {
   private lateinit var keysContainer: LinearLayout
   private lateinit var headerContainer: LinearLayout
   private lateinit var contentContainer: FrameLayout
+  private lateinit var contentStack: LinearLayout
   private lateinit var aiSuggestionBar: LinearLayout
   private lateinit var aiStatusText: TextView
   private lateinit var aiActionBtn: TextView
@@ -77,6 +78,7 @@ class AresInputMethodService : InputMethodService() {
     keyboardRoot = layoutInflater.inflate(R.layout.ares_keyboard_main, null) as LinearLayout
     headerContainer = keyboardRoot.findViewById(R.id.ares_keyboard_header_container)
     contentContainer = keyboardRoot.findViewById(R.id.keyboard_content_container)
+    contentStack = keyboardRoot.findViewById(R.id.keyboard_content_stack)
     keysContainer = keyboardRoot.findViewById(R.id.keyboard_keys_container)
 
     headerContainer.addView(buildAiAssistantBar(), LinearLayout.LayoutParams(
@@ -84,7 +86,7 @@ class AresInputMethodService : InputMethodService() {
     ))
 
     aiSuggestionBar = buildAiSuggestionPreview()
-    contentContainer.addView(aiSuggestionBar)
+    contentStack.addView(aiSuggestionBar, 0)
 
     renderKeys()
     return keyboardRoot
@@ -499,7 +501,7 @@ class AresInputMethodService : InputMethodService() {
         Toast.makeText(this@AresInputMethodService, "Configure a chave do provedor para pesquisar GIFs.", Toast.LENGTH_SHORT).show()
       }
     }
-    contentContainer.addView(auxiliaryPanel, 0)
+    contentStack.addView(auxiliaryPanel, 0)
   }
 
   private fun startVoiceInput() {
@@ -540,7 +542,8 @@ class AresInputMethodService : InputMethodService() {
 
   private fun translateBeforeCursor() {
     val ic = currentInputConnection ?: return
-    val source = ic.getTextBeforeCursor(2000, 0)?.toString().orEmpty().trim()
+    val rawSource = ic.getTextBeforeCursor(2000, 0)?.toString().orEmpty()
+    val source = rawSource.trim()
     if (source.isBlank()) {
       Toast.makeText(this, "Digite texto em inglês antes de traduzir.", Toast.LENGTH_SHORT).show()
       return
@@ -551,7 +554,7 @@ class AresInputMethodService : InputMethodService() {
         client.translate(source).addOnSuccessListener { translated ->
           val active = currentInputConnection
           if (active != null) {
-            active.deleteSurroundingText(source.length, 0)
+            active.deleteSurroundingText(rawSource.length, 0)
             active.commitText(translated, 1)
           }
         }.addOnFailureListener {
