@@ -1,6 +1,11 @@
 package com.example.keyboard
 
 import android.graphics.Color
+import android.graphics.Bitmap
+import android.content.ComponentName
+import com.example.service.AresInputCallback
+import com.example.service.AresVisionConsentActivity
+import com.example.data.model.ScreenVisionMode
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.content.Intent
@@ -132,7 +137,7 @@ class AresInputMethodService : InputMethodService() {
       }
       setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4))
       setOnClickListener {
-        triggerQuickAiSuggestion(AresTone.NATURAL)
+        launchVisionCapture(AresTone.NATURAL)
       }
     }
     bar.addView(aresBadge)
@@ -232,6 +237,39 @@ class AresInputMethodService : InputMethodService() {
     container.addView(aiActionBtn)
 
     return container
+  }
+
+  private fun launchVisionCapture(tone: AresTone) {
+    val contextText = AresContextBridge.latestScreenText.value
+    aiSuggestionBar.visibility = View.VISIBLE
+    aiStatusText.text = "ARES aguardando autorização para analisar a tela…"
+    aiActionBtn.visibility = View.GONE
+    AresInputCallback.onBitmap = { bitmap: Bitmap ->
+      serviceScope.launch {
+        try {
+          aiStatusText.text = "Analisando imagem e contexto com Gemini…"
+          val result = withContext(Dispatchers.IO) {
+            geminiRepository.analyzeScreenVision(ScreenVisionMode.REPLY_CONVERSATION, bitmap, contextText, tone)
+          }
+          currentAiSuggestion = result.getOrNull()?.suggestedReply.orEmpty().trim()
+          if (currentAiSuggestion.isNotBlank()) showSuggestionPreview(currentAiSuggestion, tone)
+          else aiStatusText.text = "Não foi possível gerar uma sugestão."
+        } finally {
+          if (!bitmap.isRecycled) bitmap.recycle()
+        }
+      }
+    }
+    AresInputCallback.onError = { message ->
+      aiStatusText.text = message
+      aiActionBtn.visibility = View.GONE
+    }
+    try {
+      startActivity(Intent(this, AresVisionConsentActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    } catch (e: Exception) {
+      AresInputCallback.onBitmap = null
+      AresInputCallback.onError = null
+      aiStatusText.text = "Não foi possível abrir a autorização de captura: " + (e.localizedMessage ?: "erro")
+    }
   }
 
   private fun triggerQuickAiSuggestion(tone: AresTone) {
