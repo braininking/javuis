@@ -546,6 +546,7 @@ class AresInputMethodService : InputMethodService() {
       "n" -> listOf("ñ")
       else -> return
     }
+    lateinit var popup: PopupWindow
     val row = LinearLayout(this).apply {
       orientation = LinearLayout.HORIZONTAL
       setPadding(dpToPx(4), dpToPx(4), dpToPx(4), dpToPx(4))
@@ -563,7 +564,7 @@ class AresInputMethodService : InputMethodService() {
         })
       }
     }
-    val popup = PopupWindow(row, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
+    popup = PopupWindow(row, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
       setBackgroundDrawable(GradientDrawable().apply {
         setColor(Color.WHITE)
         cornerRadius = dpToPx(8).toFloat()
