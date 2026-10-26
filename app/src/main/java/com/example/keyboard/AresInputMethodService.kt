@@ -34,6 +34,7 @@ import android.widget.ScrollView
 import android.graphics.BitmapFactory
 import android.app.AlertDialog
 import android.view.inputmethod.InputMethodManager
+import com.example.service.AresMediaInserter
 import com.example.service.TenorApiService
 import com.example.service.GifObject
 import retrofit2.Retrofit
@@ -716,10 +717,40 @@ class AresInputMethodService : InputMethodService() {
               layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(92)).apply {
                 setMargins(0, dpToPx(4), 0, dpToPx(4))
               }
-              contentDescription = "GIF do Tenor; toque para inserir o link"
+              contentDescription = "GIF do Tenor; toque para inserir no chat"
               setOnClickListener {
-                currentInputConnection?.commitText(url, 1)
-                Toast.makeText(this@AresInputMethodService, "Link do GIF inserido. Envio de mídia animada ainda precisa de commitContent.", Toast.LENGTH_LONG).show()
+                isEnabled = false
+                serviceScope.launch {
+                  try {
+                    val localGif = withContext(Dispatchers.IO) {
+                      val gifDir = java.io.File(cacheDir, "gifs")
+                      if (!gifDir.exists() && !gifDir.mkdirs()) {
+                        throw IllegalStateException("Não foi possível criar o cache de GIFs.")
+                      }
+                      val gifFile = java.io.File(gifDir, "ares_${System.currentTimeMillis()}.gif")
+                      URL(url).openConnection().apply {
+                        connectTimeout = 10000
+                        readTimeout = 15000
+                      }.getInputStream().use { input ->
+                        gifFile.outputStream().use { output -> input.copyTo(output) }
+                      }
+                      gifFile
+                    }
+                    val inserted = AresMediaInserter(this@AresInputMethodService)
+                      .enviarGifParaOApp(localGif, currentInputEditorInfo, url)
+                    Toast.makeText(
+                      this@AresInputMethodService,
+                      if (inserted) "GIF enviado ao campo de mensagem. Revise antes de enviar."
+                      else "O app não aceitou GIF direto; o link foi inserido para você revisar.",
+                      Toast.LENGTH_LONG
+                    ).show()
+                  } catch (_: Exception) {
+                    currentInputConnection?.commitText(url, 1)
+                    Toast.makeText(this@AresInputMethodService, "Não foi possível baixar o GIF; o link foi inserido.", Toast.LENGTH_LONG).show()
+                  } finally {
+                    isEnabled = true
+                  }
+                }
               }
             }
             resultsList.addView(image)
