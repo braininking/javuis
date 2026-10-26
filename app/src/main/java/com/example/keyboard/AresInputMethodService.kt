@@ -577,7 +577,7 @@ class AresInputMethodService : InputMethodService() {
 
   private fun toggleGifPanel() {
     if (showingGifPanel) {
-      auxiliaryPanel?.let { keyboardRoot.removeView(it) }
+      auxiliaryPanel?.let { contentStack.removeView(it) }
       auxiliaryPanel = null
       showingGifPanel = false
       keysContainer.visibility = View.VISIBLE
