@@ -33,20 +33,12 @@ class AresVisionConsentActivity : Activity() {
       return
     }
     try {
-      val projection = projectionManager.getMediaProjection(resultCode, data)
-      val manager = AresVisionManager(
-        this,
-        projection,
-        onCaptured = { bitmap ->
-          AresInputCallback.finishWithBitmap(bitmap)
-          finish()
-        },
-        onFailure = { message ->
-          AresInputCallback.finishWithError(message)
-          finish()
-        }
-      )
-      manager.captureOneFrame()
+      val serviceIntent = Intent(this, AresVisionCaptureService::class.java).apply {
+        putExtra(AresVisionCaptureService.EXTRA_RESULT_CODE, resultCode)
+        putExtra(AresVisionCaptureService.EXTRA_RESULT_DATA, data)
+      }
+      if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(serviceIntent) else startService(serviceIntent)
+      finish()
     } catch (e: Exception) {
       AresInputCallback.finishWithError(e.localizedMessage ?: "Não foi possível iniciar a captura.")
       finish()
