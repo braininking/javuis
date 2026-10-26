@@ -46,7 +46,7 @@ class AresInputMethodService : InputMethodService() {
   private var isSymbols = false
   private var speechRecognizer: SpeechRecognizer? = null
   private var translator: com.google.mlkit.nl.translate.Translator? = null
-  private var auxiliaryPanel: TextView? = null
+  private var auxiliaryPanel: View? = null
   private var showingGifPanel = false
 
   private lateinit var keyboardRoot: LinearLayout
