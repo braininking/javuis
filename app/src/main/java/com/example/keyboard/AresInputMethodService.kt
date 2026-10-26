@@ -1,17 +1,45 @@
 package com.example.keyboard
 
 import android.graphics.Color
+import android.graphics.Bitmap
+import android.content.ComponentName
+import com.example.service.AresInputCallback
+import com.example.service.AresVisionConsentActivity
+import com.example.data.model.ScreenVisionMode
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.content.Intent
+import android.speech.RecognizerIntent
+import android.speech.RecognitionListener
+import android.speech.SpeechRecognizer
+import android.os.Bundle
+import com.google.mlkit.nl.translate.Translation
+import com.google.mlkit.nl.translate.TranslatorOptions
+import com.google.mlkit.nl.translate.TranslateLanguage
 import android.inputmethodservice.InputMethodService
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.HorizontalScrollView
+import android.widget.FrameLayout
+import android.widget.PopupWindow
+import com.example.R
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import android.widget.EditText
+import android.widget.ImageView
+import android.widget.ScrollView
+import android.graphics.BitmapFactory
+import android.app.AlertDialog
+import android.view.inputmethod.InputMethodManager
+import com.example.service.AresMediaInserter
+import com.example.service.TenorApiService
+import com.example.service.GifObject
+import retrofit2.Retrofit
+import retrofit2.converter.gson.GsonConverterFactory
+import java.net.URL
 import com.example.data.gemini.AresPersonaEngine
 import com.example.data.gemini.GeminiRepository
 import com.example.data.model.AresTone
@@ -28,9 +56,24 @@ class AresInputMethodService : InputMethodService() {
   private lateinit var geminiRepository: GeminiRepository
   private var isShifted = false
   private var isSymbols = false
+  private var speechRecognizer: SpeechRecognizer? = null
+  private var translator: com.google.mlkit.nl.translate.Translator? = null
+  private var auxiliaryPanel: View? = null
+  private var showingGifPanel = false
+  private val tenorPreferences by lazy { getSharedPreferences("ares_tenor", MODE_PRIVATE) }
+  private val tenorApi: TenorApiService by lazy {
+    Retrofit.Builder()
+      .baseUrl("https://tenor.googleapis.com/")
+      .addConverterFactory(GsonConverterFactory.create())
+      .build()
+      .create(TenorApiService::class.java)
+  }
 
   private lateinit var keyboardRoot: LinearLayout
   private lateinit var keysContainer: LinearLayout
+  private lateinit var headerContainer: LinearLayout
+  private lateinit var contentContainer: FrameLayout
+  private lateinit var contentStack: LinearLayout
   private lateinit var aiSuggestionBar: LinearLayout
   private lateinit var aiStatusText: TextView
   private lateinit var aiActionBtn: TextView
@@ -40,41 +83,31 @@ class AresInputMethodService : InputMethodService() {
   override fun onCreate() {
     super.onCreate()
     geminiRepository = GeminiRepository(this)
+    translator = Translation.getClient(TranslatorOptions.Builder().setSourceLanguage(TranslateLanguage.ENGLISH).setTargetLanguage(TranslateLanguage.PORTUGUESE).build())
   }
 
   override fun onDestroy() {
     super.onDestroy()
+    speechRecognizer?.destroy()
+    speechRecognizer = null
+    translator?.close()
+    translator = null
     serviceScope.cancel()
   }
 
   override fun onCreateInputView(): View {
-    keyboardRoot = LinearLayout(this).apply {
-      orientation = LinearLayout.VERTICAL
-      setBackgroundColor(Color.parseColor("#090E18"))
-      layoutParams = ViewGroup.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT,
-        ViewGroup.LayoutParams.WRAP_CONTENT
-      )
-      setPadding(8, 6, 8, 12)
-    }
+    keyboardRoot = layoutInflater.inflate(R.layout.ares_keyboard_main, null) as LinearLayout
+    headerContainer = keyboardRoot.findViewById(R.id.ares_keyboard_header_container)
+    contentContainer = keyboardRoot.findViewById(R.id.keyboard_content_container)
+    contentStack = keyboardRoot.findViewById(R.id.keyboard_content_stack)
+    keysContainer = keyboardRoot.findViewById(R.id.keyboard_keys_container)
 
-    // 1. ARES AI Header Bar
-    val aiHeader = buildAiAssistantBar()
-    keyboardRoot.addView(aiHeader)
+    headerContainer.addView(buildAiAssistantBar(), LinearLayout.LayoutParams(
+      ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(48)
+    ))
 
-    // 2. Suggestion Preview Banner (expandable)
     aiSuggestionBar = buildAiSuggestionPreview()
-    keyboardRoot.addView(aiSuggestionBar)
-
-    // 3. Keys Container
-    keysContainer = LinearLayout(this).apply {
-      orientation = LinearLayout.VERTICAL
-      layoutParams = LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT,
-        ViewGroup.LayoutParams.WRAP_CONTENT
-      )
-    }
-    keyboardRoot.addView(keysContainer)
+    contentStack.addView(aiSuggestionBar, 0)
 
     renderKeys()
     return keyboardRoot
@@ -96,7 +129,7 @@ class AresInputMethodService : InputMethodService() {
       gravity = Gravity.CENTER_VERTICAL
       layoutParams = LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
-        dpToPx(42)
+        dpToPx(48)
       ).apply { setMargins(4, 0, 4, 6) }
     }
 
@@ -114,7 +147,7 @@ class AresInputMethodService : InputMethodService() {
       }
       setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4))
       setOnClickListener {
-        triggerQuickAiSuggestion(AresTone.NATURAL)
+        launchVisionCapture(AresTone.NATURAL)
       }
     }
     bar.addView(aresBadge)
@@ -156,6 +189,11 @@ class AresInputMethodService : InputMethodService() {
 
     scrollView.addView(tonesRow)
     bar.addView(scrollView)
+
+    bar.addView(createToolButton("文", "Traduzir inglês para português") { translateBeforeCursor() })
+    bar.addView(createToolButton("☺", "Abrir emojis") { toggleEmojiPanel() })
+    bar.addView(createToolButton("🎙", "Digitar por voz") { startVoiceInput() })
+    bar.addView(createToolButton("GIF", "Abrir painel de GIFs") { toggleGifPanel() })
     return bar
   }
 
@@ -212,6 +250,41 @@ class AresInputMethodService : InputMethodService() {
     return container
   }
 
+  private fun launchVisionCapture(tone: AresTone) {
+    val contextText = AresContextBridge.latestScreenText.value
+    aiSuggestionBar.visibility = View.VISIBLE
+    aiStatusText.text = "ARES aguardando autorização para analisar a tela…"
+    aiActionBtn.visibility = View.GONE
+    AresInputCallback.onBitmap = { bitmap: Bitmap ->
+      if (android.os.Build.VERSION.SDK_INT >= 28) requestShowSelf(0)
+      serviceScope.launch {
+        try {
+          aiStatusText.text = "Analisando imagem e contexto com Gemini…"
+          val result = withContext(Dispatchers.IO) {
+            geminiRepository.analyzeScreenVision(ScreenVisionMode.REPLY_CONVERSATION, bitmap, contextText, tone)
+          }
+          currentAiSuggestion = result.getOrNull()?.suggestedReply.orEmpty().trim()
+          if (currentAiSuggestion.isNotBlank()) showSuggestionPreview(currentAiSuggestion, tone)
+          else aiStatusText.text = "Não foi possível gerar uma sugestão."
+        } finally {
+          if (!bitmap.isRecycled) bitmap.recycle()
+        }
+      }
+    }
+    AresInputCallback.onError = { message ->
+      if (android.os.Build.VERSION.SDK_INT >= 28) requestShowSelf(0)
+      aiStatusText.text = message
+      aiActionBtn.visibility = View.GONE
+    }
+    try {
+      startActivity(Intent(this, AresVisionConsentActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    } catch (e: Exception) {
+      AresInputCallback.onBitmap = null
+      AresInputCallback.onError = null
+      aiStatusText.text = "Não foi possível abrir a autorização de captura: " + (e.localizedMessage ?: "erro")
+    }
+  }
+
   private fun triggerQuickAiSuggestion(tone: AresTone) {
     aiSuggestionBar.visibility = View.VISIBLE
     aiStatusText.text = "⚡ ARES analisando contexto (${tone.displayName})..."
@@ -265,7 +338,7 @@ class AresInputMethodService : InputMethodService() {
         gravity = Gravity.CENTER
         layoutParams = LinearLayout.LayoutParams(
           ViewGroup.LayoutParams.MATCH_PARENT,
-          dpToPx(46)
+          dpToPx(43)
         ).apply { setMargins(0, dpToPx(2), 0, dpToPx(2)) }
       }
 
@@ -331,6 +404,77 @@ class AresInputMethodService : InputMethodService() {
       setOnClickListener {
         handleKeyPress(label)
       }
+      if (label.length == 1 && label[0].isLetter()) {
+        setOnLongClickListener {
+          showAccentPopup(it, label.lowercase())
+          true
+        }
+      }
+      if (label == "SPACE") {
+        var downX = 0f
+        var lastX = 0f
+        var dragged = false
+        var accumulated = 0f
+        setOnTouchListener { _, event ->
+          when (event.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+              downX = event.rawX
+              lastX = downX
+              dragged = false
+              accumulated = 0f
+              false
+            }
+            android.view.MotionEvent.ACTION_MOVE -> {
+              val dx = event.rawX - lastX
+              if (kotlin.math.abs(event.rawX - downX) > dpToPx(8)) dragged = true
+              if (dragged) {
+                accumulated += dx
+                lastX = event.rawX
+                val step = dpToPx(12).coerceAtLeast(1)
+                if (kotlin.math.abs(accumulated) >= step) {
+                  val ic = currentInputConnection
+                  val extracted = ic?.getExtractedText(android.view.inputmethod.ExtractedTextRequest(), 0)
+                  if (ic != null && extracted != null) {
+                    val textLength = extracted.text?.length ?: 0
+                    val cursor = extracted.selectionStart.coerceIn(0, textLength)
+                    val target = (cursor + if (accumulated > 0) 1 else -1).coerceIn(0, textLength)
+                    ic.setSelection(target, target)
+                  }
+                  accumulated = 0f
+                }
+                true
+              } else false
+            }
+            android.view.MotionEvent.ACTION_UP -> if (dragged) true else false
+            else -> false
+          }
+        }
+      } else if (label == "BACKSPACE") {
+        var anchorX = 0f
+        var dragDeleting = false
+        val deleteThreshold = dpToPx(30).coerceAtLeast(1)
+        setOnTouchListener { _, event ->
+          when (event.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+              anchorX = event.rawX
+              dragDeleting = false
+              false
+            }
+            android.view.MotionEvent.ACTION_MOVE -> {
+              val movedLeft = anchorX - event.rawX
+              if (movedLeft >= deleteThreshold) {
+                // One deletion per 30dp crossed; never query/delete on every pixel.
+                deleteWordsFromCursor(dpToPx(18).toFloat())
+                anchorX = event.rawX
+                dragDeleting = true
+                true
+              } else dragDeleting
+            }
+            android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> dragDeleting
+            else -> dragDeleting
+          }
+        }
+      }
     }
     return keyBtn
   }
@@ -363,6 +507,352 @@ class AresInputMethodService : InputMethodService() {
         }
       }
     }
+  }
+
+  private fun createToolButton(label: String, description: String, action: () -> Unit): TextView {
+    return TextView(this).apply {
+      text = label
+      contentDescription = description
+      gravity = Gravity.CENTER
+      setTextColor(Color.parseColor("#1A73E8"))
+      setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+      layoutParams = LinearLayout.LayoutParams(dpToPx(38), dpToPx(48))
+      setOnClickListener { action() }
+    }
+  }
+
+  private fun toggleEmojiPanel() {
+    auxiliaryPanel?.let { contentStack.removeView(it) }
+    keysContainer.visibility = View.GONE
+    showingGifPanel = true
+    auxiliaryPanel = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL
+      gravity = Gravity.CENTER
+      layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+      val title = TextView(this@AresInputMethodService).apply {
+        text = "Emojis — toque para inserir"
+        setTextColor(Color.DKGRAY)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+        gravity = Gravity.CENTER
+      }
+      addView(title)
+      val emojis = listOf("😀", "😂", "🥹", "😍", "🥰", "😎", "😭", "🙏", "❤️", "👍", "🔥", "🎉")
+      val rows = emojis.chunked(6)
+      rows.forEach { row ->
+        val line = LinearLayout(this@AresInputMethodService).apply {
+          orientation = LinearLayout.HORIZONTAL
+          gravity = Gravity.CENTER
+        }
+        row.forEach { emoji ->
+          val item = TextView(this@AresInputMethodService).apply {
+            text = emoji
+            textSize = 25f
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(48), 1f)
+            setOnClickListener { currentInputConnection?.commitText(emoji, 1) }
+          }
+          line.addView(item)
+        }
+        addView(line)
+      }
+      val back = TextView(this@AresInputMethodService).apply {
+        text = "Voltar ao teclado"
+        gravity = Gravity.CENTER
+        setTextColor(Color.parseColor("#1A73E8"))
+        setPadding(0, dpToPx(8), 0, dpToPx(8))
+        setOnClickListener { toggleGifPanel() }
+      }
+      addView(back)
+    }
+    contentStack.addView(auxiliaryPanel, 0)
+  }
+
+  private fun showAccentPopup(anchor: View, base: String) {
+    val options = when (base) {
+      "a" -> listOf("á", "à", "â", "ã", "ä")
+      "e" -> listOf("é", "è", "ê", "ë")
+      "i" -> listOf("í", "ì", "î", "ï")
+      "o" -> listOf("ó", "ò", "ô", "õ", "ö")
+      "u" -> listOf("ú", "ù", "û", "ü")
+      "c" -> listOf("ç")
+      "n" -> listOf("ñ")
+      else -> return
+    }
+    var popup: PopupWindow? = null
+    val row = LinearLayout(this).apply {
+      orientation = LinearLayout.HORIZONTAL
+      setPadding(dpToPx(4), dpToPx(4), dpToPx(4), dpToPx(4))
+      options.forEach { character ->
+        addView(TextView(this@AresInputMethodService).apply {
+          text = if (isShifted) character.uppercase() else character
+          textSize = 22f
+          gravity = Gravity.CENTER
+          setTextColor(Color.BLACK)
+          setPadding(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4))
+          setOnClickListener {
+            currentInputConnection?.commitText(text, 1)
+            popup?.dismiss()
+          }
+        })
+      }
+    }
+    popup = PopupWindow(row, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
+      setBackgroundDrawable(GradientDrawable().apply {
+        setColor(Color.WHITE)
+        cornerRadius = dpToPx(8).toFloat()
+        setStroke(1, Color.LTGRAY)
+      })
+      elevation = dpToPx(8).toFloat()
+    }
+    popup?.showAsDropDown(anchor, 0, -anchor.height * 2)
+  }
+
+  private fun toggleGifPanel() {
+    if (showingGifPanel) {
+      auxiliaryPanel?.let { contentStack.removeView(it) }
+      auxiliaryPanel = null
+      showingGifPanel = false
+      keysContainer.visibility = View.VISIBLE
+      return
+    }
+    showingGifPanel = true
+    keysContainer.visibility = View.GONE
+    val panel = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL
+      setPadding(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4))
+      layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+    }
+    val controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+    val queryInput = EditText(this).apply {
+      hint = "Buscar GIFs"
+      singleLine = true
+      setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+      layoutParams = LinearLayout.LayoutParams(0, dpToPx(44), 1f)
+    }
+    val searchButton = createToolButton("Buscar", "Pesquisar GIFs no Tenor") {
+      val key = tenorPreferences.getString("api_key", null)
+      if (key.isNullOrBlank()) {
+        showTenorApiKeyDialog { searchTenorGifs(queryInput.text.toString().trim().ifBlank { "hello" }, it, panel) }
+      } else {
+        searchTenorGifs(queryInput.text.toString().trim().ifBlank { "hello" }, key, panel)
+      }
+    }
+    controls.addView(queryInput, LinearLayout.LayoutParams(0, dpToPx(44), 1f))
+    controls.addView(searchButton)
+    panel.addView(controls)
+    val results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+    val resultsScroll = ScrollView(this).apply {
+      addView(results)
+      layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+    }
+    panel.addView(resultsScroll)
+    val footer = TextView(this).apply {
+      text = "Configurar chave Tenor  •  Voltar ao teclado"
+      gravity = Gravity.CENTER
+      setTextColor(Color.parseColor("#1A73E8"))
+      setPadding(0, dpToPx(8), 0, dpToPx(8))
+      setOnClickListener {
+        AlertDialog.Builder(this@AresInputMethodService)
+          .setTitle("Chave da API Tenor")
+          .setMessage("A chave é salva apenas nas preferências privadas do ARES neste aparelho.")
+          .setPositiveButton("Configurar") { _, _ -> showTenorApiKeyDialog { key -> searchTenorGifs(queryInput.text.toString().trim().ifBlank { "hello" }, key, panel) } }
+          .setNegativeButton("Voltar") { _, _ -> toggleGifPanel() }
+          .show()
+      }
+    }
+    panel.addView(footer)
+    auxiliaryPanel = panel
+    contentStack.addView(panel, 0)
+  }
+
+  private fun showTenorApiKeyDialog(onSaved: (String) -> Unit) {
+    val input = EditText(this).apply {
+      hint = "Chave da API Tenor"
+      singleLine = true
+      setText(tenorPreferences.getString("api_key", "").orEmpty())
+    }
+    AlertDialog.Builder(this)
+      .setTitle("Configurar Tenor")
+      .setMessage("Obtenha uma chave no portal de desenvolvedores do Tenor. Não coloque a chave no código-fonte.")
+      .setView(input)
+      .setPositiveButton("Salvar e pesquisar") { _, _ ->
+        val key = input.text.toString().trim()
+        if (key.isNotBlank()) {
+          tenorPreferences.edit().putString("api_key", key).apply()
+          onSaved(key)
+        } else {
+          Toast.makeText(this, "Informe uma chave válida.", Toast.LENGTH_SHORT).show()
+        }
+      }
+      .setNegativeButton("Cancelar", null)
+      .show()
+  }
+
+  private fun searchTenorGifs(query: String, apiKey: String, panel: LinearLayout) {
+    val results = panel.getChildAt(1) as? ScrollView ?: return
+    val resultsList = results.getChildAt(0) as? LinearLayout ?: return
+    resultsList.removeAllViews()
+    resultsList.addView(TextView(this).apply {
+      text = "Buscando GIFs…"
+      gravity = Gravity.CENTER
+      setPadding(0, dpToPx(12), 0, dpToPx(12))
+    })
+    serviceScope.launch {
+      try {
+        val response = withContext(Dispatchers.IO) { tenorApi.buscarGifs(query, apiKey) }
+        resultsList.removeAllViews()
+        if (response.results.isEmpty()) {
+          resultsList.addView(TextView(this@AresInputMethodService).apply {
+            text = "Nenhum GIF encontrado. Verifique a chave do Tenor e tente novamente."
+            gravity = Gravity.CENTER
+          })
+          return@launch
+        }
+        response.results.forEach { gif ->
+          val url = gif.mediaFormats?.tinygif?.url ?: gif.mediaFormats?.gif?.url
+          if (!url.isNullOrBlank()) {
+            val image = ImageView(this@AresInputMethodService).apply {
+              adjustViewBounds = true
+              scaleType = ImageView.ScaleType.FIT_CENTER
+              layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(92)).apply {
+                setMargins(0, dpToPx(4), 0, dpToPx(4))
+              }
+              contentDescription = "GIF do Tenor; toque para inserir no chat"
+              setOnClickListener {
+                isEnabled = false
+                serviceScope.launch {
+                  try {
+                    val localGif = withContext(Dispatchers.IO) {
+                      val gifDir = java.io.File(cacheDir, "gifs")
+                      if (!gifDir.exists() && !gifDir.mkdirs()) {
+                        throw IllegalStateException("Não foi possível criar o cache de GIFs.")
+                      }
+                      val gifFile = java.io.File(gifDir, "ares_${System.currentTimeMillis()}.gif")
+                      URL(url).openConnection().apply {
+                        connectTimeout = 10000
+                        readTimeout = 15000
+                      }.getInputStream().use { input ->
+                        gifFile.outputStream().use { output -> input.copyTo(output) }
+                      }
+                      gifFile
+                    }
+                    val inserted = AresMediaInserter(this@AresInputMethodService)
+                      .enviarGifParaOApp(localGif, currentInputEditorInfo, url)
+                    Toast.makeText(
+                      this@AresInputMethodService,
+                      if (inserted) "GIF enviado ao campo de mensagem. Revise antes de enviar."
+                      else "O app não aceitou GIF direto; o link foi inserido para você revisar.",
+                      Toast.LENGTH_LONG
+                    ).show()
+                  } catch (_: Exception) {
+                    currentInputConnection?.commitText(url, 1)
+                    Toast.makeText(this@AresInputMethodService, "Não foi possível baixar o GIF; o link foi inserido.", Toast.LENGTH_LONG).show()
+                  } finally {
+                    isEnabled = true
+                  }
+                }
+              }
+            }
+            resultsList.addView(image)
+            serviceScope.launch(Dispatchers.IO) {
+              try {
+                val bitmap = URL(url).openConnection().apply {
+                  connectTimeout = 8000
+                  readTimeout = 8000
+                }.getInputStream().use { BitmapFactory.decodeStream(it) }
+                if (bitmap != null) withContext(Dispatchers.Main) {
+                  if (image.isAttachedToWindow) image.setImageBitmap(bitmap) else bitmap.recycle()
+                }
+              } catch (_: Exception) { }
+            }
+          }
+        }
+      } catch (e: Exception) {
+        resultsList.removeAllViews()
+        resultsList.addView(TextView(this@AresInputMethodService).apply {
+          text = "Falha ao consultar o Tenor. Confira a conexão e a chave da API."
+          gravity = Gravity.CENTER
+        })
+      }
+    }
+  }
+
+  private fun startVoiceInput() {
+    if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+      Toast.makeText(this, "Reconhecimento de voz indisponível.", Toast.LENGTH_SHORT).show()
+      return
+    }
+    try {
+      speechRecognizer?.destroy()
+      speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this).apply {
+        setRecognitionListener(object : RecognitionListener {
+          override fun onReadyForSpeech(params: Bundle?) {}
+          override fun onBeginningOfSpeech() {}
+          override fun onRmsChanged(rmsdB: Float) {}
+          override fun onBufferReceived(buffer: ByteArray?) {}
+          override fun onEndOfSpeech() {}
+          override fun onError(error: Int) {
+            Toast.makeText(this@AresInputMethodService, "Falha no reconhecimento de voz: " + error, Toast.LENGTH_SHORT).show()
+          }
+          override fun onResults(results: Bundle?) {
+            val spoken = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+            if (!spoken.isNullOrBlank()) currentInputConnection?.commitText(spoken, 1)
+          }
+          override fun onPartialResults(partialResults: Bundle?) {}
+          override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+      }
+      val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE, "pt-BR")
+        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+      }
+      speechRecognizer?.startListening(intent)
+    } catch (e: Exception) {
+      Toast.makeText(this, "Não foi possível iniciar a voz: " + (e.localizedMessage ?: "erro"), Toast.LENGTH_SHORT).show()
+    }
+  }
+
+  private fun translateBeforeCursor() {
+    val ic = currentInputConnection ?: return
+    val rawSource = ic.getTextBeforeCursor(2000, 0)?.toString().orEmpty()
+    val source = rawSource.trim()
+    if (source.isBlank()) {
+      Toast.makeText(this, "Digite texto em inglês antes de traduzir.", Toast.LENGTH_SHORT).show()
+      return
+    }
+    val client = translator ?: return
+    client.downloadModelIfNeeded()
+      .addOnSuccessListener {
+        client.translate(source).addOnSuccessListener { translated ->
+          val active = currentInputConnection
+          if (active != null) {
+            active.deleteSurroundingText(rawSource.length, 0)
+            active.commitText(translated, 1)
+          }
+        }.addOnFailureListener {
+          Toast.makeText(this, "Falha na tradução.", Toast.LENGTH_SHORT).show()
+        }
+      }
+      .addOnFailureListener {
+        Toast.makeText(this, "Não foi possível baixar o modelo de tradução.", Toast.LENGTH_SHORT).show()
+      }
+  }
+
+  private fun deleteWordsFromCursor(distancePx: Float) {
+    val ic = currentInputConnection ?: return
+    val before = ic.getTextBeforeCursor(2000, 0)?.toString().orEmpty()
+    if (before.isEmpty()) return
+    val wordsToDelete = (distancePx / dpToPx(18).coerceAtLeast(1)).toInt().coerceAtLeast(1)
+    var index = before.length
+    var words = 0
+    while (index > 0 && words < wordsToDelete) {
+      while (index > 0 && before[index - 1].isWhitespace()) index--
+      while (index > 0 && !before[index - 1].isWhitespace()) index--
+      words++
+    }
+    val count = before.length - index
+    if (count > 0) ic.deleteSurroundingText(count, 0)
   }
 
   private fun dpToPx(dp: Int): Int {
