@@ -22,6 +22,8 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.HorizontalScrollView
+import android.widget.FrameLayout
+import com.example.R
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -48,6 +50,8 @@ class AresInputMethodService : InputMethodService() {
 
   private lateinit var keyboardRoot: LinearLayout
   private lateinit var keysContainer: LinearLayout
+  private lateinit var headerContainer: LinearLayout
+  private lateinit var contentContainer: FrameLayout
   private lateinit var aiSuggestionBar: LinearLayout
   private lateinit var aiStatusText: TextView
   private lateinit var aiActionBtn: TextView
@@ -70,34 +74,17 @@ class AresInputMethodService : InputMethodService() {
   }
 
   override fun onCreateInputView(): View {
-    keyboardRoot = LinearLayout(this).apply {
-      orientation = LinearLayout.VERTICAL
-      setBackgroundColor(Color.parseColor("#090E18"))
-      layoutParams = ViewGroup.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT,
-        dpToPx(260)
-      )
-      setPadding(4, 0, 4, 2)
-    }
+    keyboardRoot = layoutInflater.inflate(R.layout.ares_keyboard_main, null) as LinearLayout
+    headerContainer = keyboardRoot.findViewById(R.id.ares_keyboard_header_container)
+    contentContainer = keyboardRoot.findViewById(R.id.keyboard_content_container)
+    keysContainer = keyboardRoot.findViewById(R.id.keyboard_keys_container)
 
-    // 1. ARES AI Header Bar
-    val aiHeader = buildAiAssistantBar()
-    keyboardRoot.addView(aiHeader)
+    headerContainer.addView(buildAiAssistantBar(), LinearLayout.LayoutParams(
+      ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(48)
+    ))
 
-    // 2. Suggestion Preview Banner (expandable)
     aiSuggestionBar = buildAiSuggestionPreview()
-    keyboardRoot.addView(aiSuggestionBar)
-
-    // 3. Keys Container
-    keysContainer = LinearLayout(this).apply {
-      orientation = LinearLayout.VERTICAL
-      layoutParams = LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT,
-        0,
-        1f
-      )
-    }
-    keyboardRoot.addView(keysContainer)
+    contentContainer.addView(aiSuggestionBar)
 
     renderKeys()
     return keyboardRoot
@@ -512,7 +499,7 @@ class AresInputMethodService : InputMethodService() {
         Toast.makeText(this@AresInputMethodService, "Configure a chave do provedor para pesquisar GIFs.", Toast.LENGTH_SHORT).show()
       }
     }
-    keyboardRoot.addView(auxiliaryPanel, keyboardRoot.indexOfChild(keysContainer))
+    contentContainer.addView(auxiliaryPanel, 0)
   }
 
   private fun startVoiceInput() {
