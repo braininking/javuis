@@ -173,6 +173,10 @@ class AresInputMethodService : InputMethodService() {
 
     scrollView.addView(tonesRow)
     bar.addView(scrollView)
+
+    bar.addView(createToolButton("文", "Traduzir inglês para português") { translateBeforeCursor() })
+    bar.addView(createToolButton("🎙", "Digitar por voz") { startVoiceInput() })
+    bar.addView(createToolButton("GIF", "Abrir painel de GIFs") { toggleGifPanel() })
     return bar
   }
 
@@ -380,6 +384,118 @@ class AresInputMethodService : InputMethodService() {
         }
       }
     }
+  }
+
+  private fun createToolButton(label: String, description: String, action: () -> Unit): TextView {
+    return TextView(this).apply {
+      text = label
+      contentDescription = description
+      gravity = Gravity.CENTER
+      setTextColor(Color.parseColor("#1A73E8"))
+      setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+      layoutParams = LinearLayout.LayoutParams(dpToPx(38), dpToPx(48))
+      setOnClickListener { action() }
+    }
+  }
+
+  private fun toggleGifPanel() {
+    if (showingGifPanel) {
+      auxiliaryPanel?.let { keyboardRoot.removeView(it) }
+      auxiliaryPanel = null
+      showingGifPanel = false
+      keysContainer.visibility = View.VISIBLE
+      return
+    }
+    showingGifPanel = true
+    keysContainer.visibility = View.GONE
+    auxiliaryPanel = TextView(this).apply {
+      text = "Painel de GIFs\nA integração de busca precisa de uma chave oficial do Tenor ou GIPHY. Nenhuma chave foi embutida no aplicativo."
+      gravity = Gravity.CENTER
+      setTextColor(Color.DKGRAY)
+      setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+      layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(220))
+      setOnClickListener {
+        Toast.makeText(this@AresInputMethodService, "Configure a chave do provedor para pesquisar GIFs.", Toast.LENGTH_SHORT).show()
+      }
+    }
+    keyboardRoot.addView(auxiliaryPanel, keyboardRoot.indexOfChild(keysContainer))
+  }
+
+  private fun startVoiceInput() {
+    if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+      Toast.makeText(this, "Reconhecimento de voz indisponível.", Toast.LENGTH_SHORT).show()
+      return
+    }
+    try {
+      speechRecognizer?.destroy()
+      speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this).apply {
+        setRecognitionListener(object : RecognitionListener {
+          override fun onReadyForSpeech(params: Bundle?) {}
+          override fun onBeginningOfSpeech() {}
+          override fun onRmsChanged(rmsdB: Float) {}
+          override fun onBufferReceived(buffer: ByteArray?) {}
+          override fun onEndOfSpeech() {}
+          override fun onError(error: Int) {
+            Toast.makeText(this@AresInputMethodService, "Falha no reconhecimento de voz: " + error, Toast.LENGTH_SHORT).show()
+          }
+          override fun onResults(results: Bundle?) {
+            val spoken = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+            if (!spoken.isNullOrBlank()) currentInputConnection?.commitText(spoken, 1)
+          }
+          override fun onPartialResults(partialResults: Bundle?) {}
+          override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+      }
+      val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE, "pt-BR")
+        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+      }
+      speechRecognizer?.startListening(intent)
+    } catch (e: Exception) {
+      Toast.makeText(this, "Não foi possível iniciar a voz: " + (e.localizedMessage ?: "erro"), Toast.LENGTH_SHORT).show()
+    }
+  }
+
+  private fun translateBeforeCursor() {
+    val ic = currentInputConnection ?: return
+    val source = ic.getTextBeforeCursor(2000, 0)?.toString().orEmpty().trim()
+    if (source.isBlank()) {
+      Toast.makeText(this, "Digite texto em inglês antes de traduzir.", Toast.LENGTH_SHORT).show()
+      return
+    }
+    val client = translator ?: return
+    client.downloadModelIfNeeded()
+      .addOnSuccessListener {
+        client.translate(source).addOnSuccessListener { translated ->
+          val active = currentInputConnection
+          if (active != null) {
+            active.deleteSurroundingText(source.length, 0)
+            active.commitText(translated, 1)
+          }
+        }.addOnFailureListener {
+          Toast.makeText(this, "Falha na tradução.", Toast.LENGTH_SHORT).show()
+        }
+      }
+      .addOnFailureListener {
+        Toast.makeText(this, "Não foi possível baixar o modelo de tradução.", Toast.LENGTH_SHORT).show()
+      }
+  }
+
+  private fun deleteWordsFromCursor(distancePx: Float) {
+    val ic = currentInputConnection ?: return
+    val before = ic.getTextBeforeCursor(2000, 0)?.toString().orEmpty()
+    if (before.isEmpty()) return
+    val wordsToDelete = (distancePx / dpToPx(18).coerceAtLeast(1)).toInt().coerceAtLeast(1)
+    var index = before.length
+    var words = 0
+    while (index > 0 && words < wordsToDelete) {
+      while (index > 0 && before[index - 1].isWhitespace()) index--
+      while (index > 0 && !before[index - 1].isWhitespace()) index--
+      words++
+    }
+    val count = before.length - index
+    if (count > 0) ic.deleteSurroundingText(count, 0)
   }
 
   private fun dpToPx(dp: Int): Int {
