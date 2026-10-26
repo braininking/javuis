@@ -23,6 +23,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.HorizontalScrollView
 import android.widget.FrameLayout
+import android.widget.PopupWindow
 import com.example.R
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -170,6 +171,7 @@ class AresInputMethodService : InputMethodService() {
     bar.addView(scrollView)
 
     bar.addView(createToolButton("文", "Traduzir inglês para português") { translateBeforeCursor() })
+    bar.addView(createToolButton("☺", "Abrir emojis") { toggleEmojiPanel() })
     bar.addView(createToolButton("🎙", "Digitar por voz") { startVoiceInput() })
     bar.addView(createToolButton("GIF", "Abrir painel de GIFs") { toggleGifPanel() })
     return bar
@@ -380,6 +382,12 @@ class AresInputMethodService : InputMethodService() {
       setOnClickListener {
         handleKeyPress(label)
       }
+      if (label.length == 1 && label[0].isLetter()) {
+        setOnLongClickListener {
+          showAccentPopup(it, label.lowercase())
+          true
+        }
+      }
       if (label == "SPACE") {
         var downX = 0f
         var lastX = 0f
@@ -479,6 +487,91 @@ class AresInputMethodService : InputMethodService() {
       layoutParams = LinearLayout.LayoutParams(dpToPx(38), dpToPx(48))
       setOnClickListener { action() }
     }
+  }
+
+  private fun toggleEmojiPanel() {
+    auxiliaryPanel?.let { contentStack.removeView(it) }
+    keysContainer.visibility = View.GONE
+    showingGifPanel = true
+    auxiliaryPanel = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL
+      gravity = Gravity.CENTER
+      layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+      val title = TextView(this@AresInputMethodService).apply {
+        text = "Emojis — toque para inserir"
+        setTextColor(Color.DKGRAY)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+        gravity = Gravity.CENTER
+      }
+      addView(title)
+      val emojis = listOf("😀", "😂", "🥹", "😍", "🥰", "😎", "😭", "🙏", "❤️", "👍", "🔥", "🎉")
+      val rows = emojis.chunked(6)
+      rows.forEach { row ->
+        val line = LinearLayout(this@AresInputMethodService).apply {
+          orientation = LinearLayout.HORIZONTAL
+          gravity = Gravity.CENTER
+        }
+        row.forEach { emoji ->
+          val item = TextView(this@AresInputMethodService).apply {
+            text = emoji
+            textSize = 25f
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(48), 1f)
+            setOnClickListener { currentInputConnection?.commitText(emoji, 1) }
+          }
+          line.addView(item)
+        }
+        addView(line)
+      }
+      val back = TextView(this@AresInputMethodService).apply {
+        text = "Voltar ao teclado"
+        gravity = Gravity.CENTER
+        setTextColor(Color.parseColor("#1A73E8"))
+        setPadding(0, dpToPx(8), 0, dpToPx(8))
+        setOnClickListener { toggleGifPanel() }
+      }
+      addView(back)
+    }
+    contentStack.addView(auxiliaryPanel, 0)
+  }
+
+  private fun showAccentPopup(anchor: View, base: String) {
+    val options = when (base) {
+      "a" -> listOf("á", "à", "â", "ã", "ä")
+      "e" -> listOf("é", "è", "ê", "ë")
+      "i" -> listOf("í", "ì", "î", "ï")
+      "o" -> listOf("ó", "ò", "ô", "õ", "ö")
+      "u" -> listOf("ú", "ù", "û", "ü")
+      "c" -> listOf("ç")
+      "n" -> listOf("ñ")
+      else -> return
+    }
+    val row = LinearLayout(this).apply {
+      orientation = LinearLayout.HORIZONTAL
+      setPadding(dpToPx(4), dpToPx(4), dpToPx(4), dpToPx(4))
+      options.forEach { character ->
+        addView(TextView(this@AresInputMethodService).apply {
+          text = if (isShifted) character.uppercase() else character
+          textSize = 22f
+          gravity = Gravity.CENTER
+          setTextColor(Color.BLACK)
+          setPadding(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4))
+          setOnClickListener {
+            currentInputConnection?.commitText(text, 1)
+            popup.dismiss()
+          }
+        })
+      }
+    }
+    val popup = PopupWindow(row, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
+      setBackgroundDrawable(GradientDrawable().apply {
+        setColor(Color.WHITE)
+        cornerRadius = dpToPx(8).toFloat()
+        setStroke(1, Color.LTGRAY)
+      })
+      elevation = dpToPx(8).toFloat()
+    }
+    popup.showAsDropDown(anchor, 0, -anchor.height * 2)
   }
 
   private fun toggleGifPanel() {
