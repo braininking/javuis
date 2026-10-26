@@ -28,6 +28,17 @@ import com.example.R
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import android.widget.EditText
+import android.widget.ImageView
+import android.widget.ScrollView
+import android.graphics.BitmapFactory
+import android.app.AlertDialog
+import android.view.inputmethod.InputMethodManager
+import com.example.service.TenorApiService
+import com.example.service.GifObject
+import retrofit2.Retrofit
+import retrofit2.converter.gson.GsonConverterFactory
+import java.net.URL
 import com.example.data.gemini.AresPersonaEngine
 import com.example.data.gemini.GeminiRepository
 import com.example.data.model.AresTone
@@ -48,6 +59,14 @@ class AresInputMethodService : InputMethodService() {
   private var translator: com.google.mlkit.nl.translate.Translator? = null
   private var auxiliaryPanel: View? = null
   private var showingGifPanel = false
+  private val tenorPreferences by lazy { getSharedPreferences("ares_tenor", MODE_PRIVATE) }
+  private val tenorApi: TenorApiService by lazy {
+    Retrofit.Builder()
+      .baseUrl("https://tenor.googleapis.com/")
+      .addConverterFactory(GsonConverterFactory.create())
+      .build()
+      .create(TenorApiService::class.java)
+  }
 
   private lateinit var keyboardRoot: LinearLayout
   private lateinit var keysContainer: LinearLayout
@@ -585,17 +604,134 @@ class AresInputMethodService : InputMethodService() {
     }
     showingGifPanel = true
     keysContainer.visibility = View.GONE
-    auxiliaryPanel = TextView(this).apply {
-      text = "Painel de GIFs\nA integração de busca precisa de uma chave oficial do Tenor ou GIPHY. Nenhuma chave foi embutida no aplicativo."
-      gravity = Gravity.CENTER
-      setTextColor(Color.DKGRAY)
+    val panel = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL
+      setPadding(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4))
+      layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+    }
+    val controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+    val queryInput = EditText(this).apply {
+      hint = "Buscar GIFs"
+      singleLine = true
       setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-      layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(220))
-      setOnClickListener {
-        Toast.makeText(this@AresInputMethodService, "Configure a chave do provedor para pesquisar GIFs.", Toast.LENGTH_SHORT).show()
+      layoutParams = LinearLayout.LayoutParams(0, dpToPx(44), 1f)
+    }
+    val searchButton = createToolButton("Buscar", "Pesquisar GIFs no Tenor") {
+      val key = tenorPreferences.getString("api_key", null)
+      if (key.isNullOrBlank()) {
+        showTenorApiKeyDialog { searchTenorGifs(queryInput.text.toString().trim().ifBlank { "hello" }, it, panel) }
+      } else {
+        searchTenorGifs(queryInput.text.toString().trim().ifBlank { "hello" }, key, panel)
       }
     }
-    contentStack.addView(auxiliaryPanel, 0)
+    controls.addView(queryInput, LinearLayout.LayoutParams(0, dpToPx(44), 1f))
+    controls.addView(searchButton)
+    panel.addView(controls)
+    val results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+    val resultsScroll = ScrollView(this).apply {
+      addView(results)
+      layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+    }
+    panel.addView(resultsScroll)
+    val footer = TextView(this).apply {
+      text = "Configurar chave Tenor  •  Voltar ao teclado"
+      gravity = Gravity.CENTER
+      setTextColor(Color.parseColor("#1A73E8"))
+      setPadding(0, dpToPx(8), 0, dpToPx(8))
+      setOnClickListener {
+        AlertDialog.Builder(this@AresInputMethodService)
+          .setTitle("Chave da API Tenor")
+          .setMessage("A chave é salva apenas nas preferências privadas do ARES neste aparelho.")
+          .setPositiveButton("Configurar") { _, _ -> showTenorApiKeyDialog { key -> searchTenorGifs(queryInput.text.toString().trim().ifBlank { "hello" }, key, panel) } }
+          .setNegativeButton("Voltar") { _, _ -> toggleGifPanel() }
+          .show()
+      }
+    }
+    panel.addView(footer)
+    auxiliaryPanel = panel
+    contentStack.addView(panel, 0)
+  }
+
+  private fun showTenorApiKeyDialog(onSaved: (String) -> Unit) {
+    val input = EditText(this).apply {
+      hint = "Chave da API Tenor"
+      singleLine = true
+      setText(tenorPreferences.getString("api_key", "").orEmpty())
+    }
+    AlertDialog.Builder(this)
+      .setTitle("Configurar Tenor")
+      .setMessage("Obtenha uma chave no portal de desenvolvedores do Tenor. Não coloque a chave no código-fonte.")
+      .setView(input)
+      .setPositiveButton("Salvar e pesquisar") { _, _ ->
+        val key = input.text.toString().trim()
+        if (key.isNotBlank()) {
+          tenorPreferences.edit().putString("api_key", key).apply()
+          onSaved(key)
+        } else {
+          Toast.makeText(this, "Informe uma chave válida.", Toast.LENGTH_SHORT).show()
+        }
+      }
+      .setNegativeButton("Cancelar", null)
+      .show()
+  }
+
+  private fun searchTenorGifs(query: String, apiKey: String, panel: LinearLayout) {
+    val results = panel.getChildAt(1) as? ScrollView ?: return
+    val resultsList = results.getChildAt(0) as? LinearLayout ?: return
+    resultsList.removeAllViews()
+    resultsList.addView(TextView(this).apply {
+      text = "Buscando GIFs…"
+      gravity = Gravity.CENTER
+      setPadding(0, dpToPx(12), 0, dpToPx(12))
+    })
+    serviceScope.launch {
+      try {
+        val response = withContext(Dispatchers.IO) { tenorApi.buscarGifs(query, apiKey) }
+        resultsList.removeAllViews()
+        if (response.results.isEmpty()) {
+          resultsList.addView(TextView(this@AresInputMethodService).apply {
+            text = "Nenhum GIF encontrado. Verifique a chave do Tenor e tente novamente."
+            gravity = Gravity.CENTER
+          })
+          return@launch
+        }
+        response.results.forEach { gif ->
+          val url = gif.mediaFormats?.tinygif?.url ?: gif.mediaFormats?.gif?.url
+          if (!url.isNullOrBlank()) {
+            val image = ImageView(this@AresInputMethodService).apply {
+              adjustViewBounds = true
+              scaleType = ImageView.ScaleType.FIT_CENTER
+              layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(92)).apply {
+                setMargins(0, dpToPx(4), 0, dpToPx(4))
+              }
+              contentDescription = "GIF do Tenor; toque para inserir o link"
+              setOnClickListener {
+                currentInputConnection?.commitText(url, 1)
+                Toast.makeText(this@AresInputMethodService, "Link do GIF inserido. Envio de mídia animada ainda precisa de commitContent.", Toast.LENGTH_LONG).show()
+              }
+            }
+            resultsList.addView(image)
+            serviceScope.launch(Dispatchers.IO) {
+              try {
+                val bitmap = URL(url).openConnection().apply {
+                  connectTimeout = 8000
+                  readTimeout = 8000
+                }.getInputStream().use { BitmapFactory.decodeStream(it) }
+                if (bitmap != null) withContext(Dispatchers.Main) {
+                  if (image.isAttachedToWindow) image.setImageBitmap(bitmap) else bitmap.recycle()
+                }
+              } catch (_: Exception) { }
+            }
+          }
+        }
+      } catch (e: Exception) {
+        resultsList.removeAllViews()
+        resultsList.addView(TextView(this@AresInputMethodService).apply {
+          text = "Falha ao consultar o Tenor. Confira a conexão e a chave da API."
+          gravity = Gravity.CENTER
+        })
+      }
+    }
   }
 
   private fun startVoiceInput() {
