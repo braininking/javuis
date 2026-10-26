@@ -80,7 +80,7 @@ class AresVisionManager(
         }
         if (bitmap != null && !finished) {
           val captured = bitmap
-          mainHandler.post { if (!finished) onCaptured(captured) else captured.recycle() }
+          mainHandler.post { onCaptured(captured) }
           release()
         }
       }, mainHandler)
